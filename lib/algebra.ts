@@ -2,6 +2,8 @@ import * as rdfjs from '@rdfjs/types';
 import { Wildcard } from 'sparqljs';
 import { Term } from '@rdfjs/types';
 
+export type Prefixes = {[prefix: string]: string}
+
 export enum types {
     ALT=                'alt',
     ASK=                'ask',

@@ -30,7 +30,8 @@ import {
     ValuePatternRow,
     ValuesPattern,
     Variable,
-    Wildcard
+    Wildcard,
+    type GeneratorOptions
 } from 'sparqljs';
 import * as Algebra from './algebra';
 import Factory from './factory';
@@ -42,17 +43,17 @@ const eTypes = Algebra.expressionTypes;
 let context : { project: boolean, extend: Algebra.Extend[], group: RDF.Variable[], aggregates: Algebra.BoundAggregate[], order: Algebra.Expression[] };
 const factory = new Factory();
 
-export function toSparql(op: Algebra.Operation, options = {}): string
+export function toSparql(op: Algebra.Operation, options: GeneratorOptions = {}): string
 {
     let generator = new Generator(options);
-    return generator.stringify(toSparqlJs(op));
+    return generator.stringify(toSparqlJs(op, options.prefixes ? options.prefixes : {}));
 }
 
-export function toSparqlJs(op: Algebra.Operation):  any
+export function toSparqlJs(op: Algebra.Operation, prefixes: Algebra.Prefixes = {}):  any
 {
     resetContext();
     op = removeQuads(op);
-    let result = translateOperation(op);
+    let result = translateOperation(op, prefixes);
     if (result.type === 'group')
         return result.patterns[0];
     return result;
@@ -63,7 +64,7 @@ function resetContext()
     context = { project: false, extend: [], group: [], aggregates: [], order: [] };
 }
 
-function translateOperation(op: Algebra.Operation): any
+function translateOperation(op: Algebra.Operation, prefixes: Algebra.Prefixes = {}): any
 {
     // this allows us to differentiate between BIND and SELECT when translating EXTEND
     // GRAPH was added because the way graphs get added back here is not the same as how they get added in the future
@@ -75,10 +76,10 @@ function translateOperation(op: Algebra.Operation): any
     {
         case types.EXPRESSION: return translateExpression(op);
 
-        case types.ASK:       return translateProject(op, types.ASK);
+        case types.ASK:       return translateProject(op, types.ASK, prefixes);
         case types.BGP:       return translateBgp(op);
-        case types.CONSTRUCT: return translateConstruct(op);
-        case types.DESCRIBE:  return translateProject(op, types.DESCRIBE);
+        case types.CONSTRUCT: return translateConstruct(op, prefixes);
+        case types.DESCRIBE:  return translateProject(op, types.DESCRIBE, prefixes);
         case types.DISTINCT:  return translateDistinct(op);
         case types.EXTEND:    return translateExtend(op);
         case types.FROM:      return translateFrom(op);
@@ -92,22 +93,22 @@ function translateOperation(op: Algebra.Operation): any
         case types.ORDER_BY:  return translateOrderBy(op);
         case types.PATH:      return translatePath(op);
         case types.PATTERN:   return translatePattern(op);
-        case types.PROJECT:   return translateProject(op, types.PROJECT);
+        case types.PROJECT:   return translateProject(op, types.PROJECT, prefixes);
         case types.REDUCED:   return translateReduced(op);
         case types.SERVICE:   return translateService(op);
         case types.SLICE:     return translateSlice(op);
         case types.UNION:     return translateUnion(op);
         case types.VALUES:    return translateValues(op);
         // UPDATE operations
-        case types.COMPOSITE_UPDATE: return translateCompositeUpdate(op);
-        case types.DELETE_INSERT:    return translateDeleteInsert(op);
-        case types.LOAD:             return translateLoad(op);
-        case types.CLEAR:            return translateClear(op);
-        case types.CREATE:           return translateCreate(op);
-        case types.DROP:             return translateDrop(op);
-        case types.ADD:              return translateAdd(op);
-        case types.MOVE:             return translateMove(op);
-        case types.COPY:             return translateCopy(op);
+        case types.COMPOSITE_UPDATE: return translateCompositeUpdate(op, prefixes);
+        case types.DELETE_INSERT:    return translateDeleteInsert(op, prefixes);
+        case types.LOAD:             return translateLoad(op, prefixes);
+        case types.CLEAR:            return translateClear(op, prefixes);
+        case types.CREATE:           return translateCreate(op, prefixes);
+        case types.DROP:             return translateDrop(op, prefixes);
+        case types.ADD:              return translateAdd(op, prefixes);
+        case types.MOVE:             return translateMove(op, prefixes);
+        case types.COPY:             return translateCopy(op, prefixes);
     }
 
     throw new Error(`Unknown Operation type ${op.type}`);
@@ -238,11 +239,11 @@ function translateBgp(op: Algebra.Bgp): BgpPattern | null
     };
 }
 
-function translateConstruct(op: Algebra.Construct): ConstructQuery
+function translateConstruct(op: Algebra.Construct, prefixes: Algebra.Prefixes = {}): ConstructQuery
 {
     return {
         type: 'query',
-        prefixes: {},
+        prefixes,
         queryType: 'CONSTRUCT',
         template: op.template.map(translatePattern),
         where: Util.flatten([
@@ -321,7 +322,7 @@ function translateGroup(op: Algebra.Group): any
 
 function translateJoin(op: Algebra.Join): Pattern[]
 {
-    const arr: any[] = Util.flatten(op.input.map(translateOperation));
+    const arr: any[] = Util.flatten(op.input.map(o => translateOperation(o)));
 
     // Merge bgps
     // This is possible if one side was a path and the other a bgp for example
@@ -425,11 +426,11 @@ function replaceAggregatorVariables(s: any, map: any): any
     return s;
 }
 
-function translateProject(op: Algebra.Project | Algebra.Ask | Algebra.Describe, type: string): GroupPattern
+function translateProject(op: Algebra.Project | Algebra.Ask | Algebra.Describe, type: string, prefixes: Algebra.Prefixes = {}): GroupPattern
 {
     const result: Query = {
         type: 'query',
-        prefixes: {}
+        prefixes,
     } as any;
 
     // Makes typing easier in some places
@@ -491,7 +492,7 @@ function translateProject(op: Algebra.Project | Algebra.Ask | Algebra.Describe, 
 
     // descending expressions will already be in the correct format due to the structure of those
     if (context.order.length > 0)
-        select.order = context.order.map(translateOperation).map(o => o.descending ? o : ({ expression: o }));
+        select.order = context.order.map(o => translateOperation(o)).map(o => o.descending ? o : ({ expression: o }));
 
     // this needs to happen after the group because it might depend on variables generated there
     if (variables)
@@ -585,7 +586,7 @@ function translateUnion(op: Algebra.Union): UnionPattern
 {
     return {
         type: 'union',
-        patterns: Util.flatten(op.input.map(translateOperation))
+        patterns: Util.flatten(op.input.map(o => translateOperation(o)))
     }
 }
 
@@ -737,17 +738,17 @@ function translateZeroOrOnePath(path: Algebra.ZeroOrOnePath): PropertyPath
 
 // UPDATE OPERATIONS
 
-function translateCompositeUpdate(op: Algebra.CompositeUpdate): Update
+function translateCompositeUpdate(op: Algebra.CompositeUpdate, prefixes: Algebra.Prefixes = {}): Update
 {
   const updates = op.updates.map(update => {
     const result = translateOperation(update);
     return result.updates[0];
   });
 
-  return { prefixes: {}, type: 'update', updates }
+  return { prefixes, type: 'update', updates }
 }
 
-function translateDeleteInsert(op: Algebra.DeleteInsert): Update
+function translateDeleteInsert(op: Algebra.DeleteInsert, prefixes: Algebra.Prefixes = {}): Update
 {
     let where: Algebra.Operation | undefined = op.where;
     let using = undefined;
@@ -812,34 +813,34 @@ function translateDeleteInsert(op: Algebra.DeleteInsert): Update
         }
     }
 
-    return { prefixes: {}, type: 'update', updates }
+    return { prefixes, type: 'update', updates }
 }
 
-function translateLoad(op: Algebra.Load): Update
+function translateLoad(op: Algebra.Load, prefixes: Algebra.Prefixes = {}): Update
 {
     // Typings are wrong, destiniation is optional
     const updates: [LoadOperation] = [{ type: 'load', silent: Boolean(op.silent), source: op.source } as any];
     if (op.destination)
         updates[0].destination = op.destination;
-    return { prefixes: {}, type: 'update', updates }
+    return { prefixes, type: 'update', updates }
 }
 
-function translateClear(op: Algebra.Clear): Update
+function translateClear(op: Algebra.Clear, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateClearCreateDrop(op, 'clear');
+    return translateClearCreateDrop(op, 'clear', prefixes);
 }
 
-function translateCreate(op: Algebra.Create): Update
+function translateCreate(op: Algebra.Create, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateClearCreateDrop(op, 'create');
+    return translateClearCreateDrop(op, 'create', prefixes);
 }
 
-function translateDrop(op: Algebra.Drop): Update
+function translateDrop(op: Algebra.Drop, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateClearCreateDrop(op, 'drop');
+    return translateClearCreateDrop(op, 'drop', prefixes);
 }
 
-function translateClearCreateDrop(op: Algebra.Clear | Algebra.Create | Algebra.Drop, type: 'clear' | 'create' | 'drop'): Update
+function translateClearCreateDrop(op: Algebra.Clear | Algebra.Create | Algebra.Drop, type: 'clear' | 'create' | 'drop', prefixes: Algebra.Prefixes = {}): Update
 {
     const updates: [CreateOperation | ClearDropOperation] = [{ type, silent: Boolean(op.silent) } as any];
     // Typings are wrong, type is not required, see for example "clear-drop" test
@@ -852,31 +853,31 @@ function translateClearCreateDrop(op: Algebra.Clear | Algebra.Create | Algebra.D
     else
         updates[0].graph = { type: 'graph', name: op.source };
 
-    return { prefixes: {}, type: 'update', updates }
+    return { prefixes, type: 'update', updates }
 }
 
-function translateAdd(op: Algebra.Add): Update
+function translateAdd(op: Algebra.Add, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateUpdateGraphShortcut(op, 'add');
+    return translateUpdateGraphShortcut(op, 'add', prefixes);
 }
 
-function translateMove(op: Algebra.Move): Update
+function translateMove(op: Algebra.Move, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateUpdateGraphShortcut(op, 'move');
+    return translateUpdateGraphShortcut(op, 'move', prefixes);
 }
 
-function translateCopy(op: Algebra.Copy): Update
+function translateCopy(op: Algebra.Copy, prefixes: Algebra.Prefixes = {}): Update
 {
-    return translateUpdateGraphShortcut(op, 'copy');
+    return translateUpdateGraphShortcut(op, 'copy', prefixes);
 }
 
-function translateUpdateGraphShortcut(op: Algebra.UpdateGraphShortcut, type: 'add' | 'move' | 'copy'): Update
+function translateUpdateGraphShortcut(op: Algebra.UpdateGraphShortcut, type: 'add' | 'move' | 'copy', prefixes: Algebra.Prefixes = {}): Update
 {
     const updates: CopyMoveAddOperation[] = [{ type, silent: Boolean(op.silent) } as any];
     updates[0].source = op.source === 'DEFAULT' ? { type: 'graph', default: true } : { type: 'graph', name: op.source };
     updates[0].destination = op.destination === 'DEFAULT' ? { type: 'graph', default: true } : { type: 'graph', name: op.destination };
 
-    return { prefixes: {}, type: 'update', updates }
+    return { prefixes, type: 'update', updates }
 }
 
 // similar to removeQuads but more simplified for UPDATEs
